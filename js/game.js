@@ -31,6 +31,8 @@ var mode = {
 	ltbl: 1, // let there be light [06/08/22]
 };
 var paused = false;
+var rendering_suppressed = false; // rendering off from outside the page, without the pause UI: see suppress_rendering
+var suppressed_draw_interval = 33; // ms between draws while suppressed; each draw still runs the whole game logic
 var log_flags = {
 	//over-written at base_script
 	timers: 1,
@@ -1788,7 +1790,7 @@ function init_socket(args) {
 		rip_logic();
 		new_map_logic("start", { info: m_info });
 		new_game_logic();
-		if (no_html && window.parent && window.parent !== window && window.frameElement && parent.character_started_runner) {
+		if (started_by_parent() && parent.character_started_runner) {
 			var requested_name = window.frameElement.getAttribute("data-name");
 			if (requested_name) parent.character_started_runner(requested_name, character.name);
 		}
@@ -1859,7 +1861,7 @@ function init_socket(args) {
 		socket.emit("requested_ack", {});
 	});
 	socket.on("game_error", function (data) {
-		if (no_html && !game_loaded && window.parent && window.parent !== window && window.frameElement && parent.character_start_failed_runner) {
+		if (!game_loaded && started_by_parent() && parent.character_start_failed_runner) {
 			var requested_name = window.frameElement.getAttribute("data-name");
 			if (requested_name) parent.character_start_failed_runner(requested_name, data);
 		}
@@ -3119,7 +3121,8 @@ function init_socket(args) {
 			try {
 				var chars = get_active_characters();
 				for (var name in chars) {
-					if (chars[name] == "code" || chars[name] == "active") {
+					// viewable characters get their own chest_opened and retire the sprite themselves
+					if ((chars[name] == "code" || chars[name] == "active") && !is_viewable_character(name)) {
 						character_window_eval(name, "delete chests['" + data.id + "'];");
 					}
 				}
@@ -5274,7 +5277,7 @@ function update_sprite(sprite) {
 		}
 	}
 
-	if (sprite.mtype && !(no_graphics || paused)) {
+	if (sprite.mtype && !(no_graphics || rendering_off())) {
 		if (sprite.mtype == "dice") {
 			if (sprite.shuffling) {
 				var shake = false;
@@ -6732,7 +6735,7 @@ function create_map() {
 	var cached_map = window.cached_map && !G.maps[current_map].generated;
 	var start = new Date();
 	pvp = G.maps[current_map].pvp || is_pvp;
-	if (paused) return;
+	if (rendering_off()) return;
 	drawn_map = current_map;
 	if (window.map) {
 		if (window.inner_stage) inner_stage.removeChild(window.map);
@@ -7157,7 +7160,7 @@ function create_map() {
 }
 
 function retile_the_map() {
-	if (no_graphics || paused) return;
+	if (no_graphics || rendering_off()) return;
 	var cached_map = map.cached;
 	if (cached_map) {
 		if (dtile_size && (dtile_width < width || dtile_height < height)) recreate_dtextures();
@@ -7447,6 +7450,33 @@ function pause() {
 	}
 }
 
+// Whether nothing is being drawn right now: the player paused, or the
+// page was told to suppress rendering. Every rendering decision reads this;
+// the pause toggle and its UI read `paused` alone.
+function rendering_off() {
+	return paused || rendering_suppressed;
+}
+
+// Rendering off or on from outside the page, without the pause UI: used by
+// a window showing another character in place of its own, and for viewable
+// characters that aren't being shown. Suppressed skips exactly what the
+// player's pause skips (see rendering_off), and the draw loop runs every
+// suppressed_draw_interval instead of every frame. The player's own pause
+// is a separate flag and is left alone.
+function suppress_rendering(value) {
+	value = !!value;
+	if (value == rendering_suppressed) return;
+	rendering_suppressed = value;
+	if (!rendering_suppressed && current_map != drawn_map) create_map();
+}
+
+// True inside a frame that a parent window opened with start_character:
+// headless ones, and viewable ones (full clients stacked under the parent).
+// Such frames report their start, or its failure, to the parent.
+function started_by_parent() {
+	return (no_html || (window.frameElement && window.frameElement.classList.contains("viewable"))) && window.parent && window.parent !== window && window.frameElement;
+}
+
 function draw(arg1, manual_draw) {
 	// for(var i=0;i<20000000;i++) { var j=12; j*=Math.random()+i; }
 	if (manual_stop) return;
@@ -7560,7 +7590,7 @@ function draw(arg1, manual_draw) {
 
 	stop_timer("draw", "before_render");
 
-	if (force_draw_on || (!manual_draw && !is_hidden() && !paused)) {
+	if (force_draw_on || (!manual_draw && !is_hidden() && !rendering_off())) {
 		renderer.render(stage);
 		if (typeof update_npc_obstruction_hint == "function") update_npc_obstruction_hint();
 		force_draw_on = false;
@@ -7574,11 +7604,13 @@ function draw(arg1, manual_draw) {
 		//  && !no_html [18/04/19] - let no_html call draw as usual too
 		if (no_graphics)
 			t = setTimeout(draw, 16); // jsdom patch [18/04/19]
+		else if (rendering_suppressed) t = setTimeout(draw, suppressed_draw_interval);
 		else requestAnimationFrame(draw);
 		try {
 			var chars = get_active_characters();
 			for (var name in chars) {
-				if (chars[name] != "self" && chars[name] != "loading") character_window_eval(name, "draw()");
+				// viewable characters are full clients that run their own draw loop
+				if (chars[name] != "self" && chars[name] != "loading" && !is_viewable_character(name)) character_window_eval(name, "draw()");
 			}
 		} catch (e) {
 			console.log(e);

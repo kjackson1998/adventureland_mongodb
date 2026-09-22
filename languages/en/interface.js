@@ -1418,6 +1418,10 @@ module.exports = {
 	"interface.load_character_list.online": "ONLINE",
 	// js/html.js load_character_list; inactive text replacing the Deploy link when that character is already online. Keep compact for a 120px column.
 	"interface.load_character_list.deployed": "Deployed",
+	// js/html.js load_character_list; link replacing Deploy when that character runs in this window as a viewable character; clicking shows it in place of the current one. Keep compact for a 120px column.
+	"interface.load_character_list.view": "View",
+	// js/html.js load_character_list; gray tip under the character table. Deploy runs the character in this window; Ctrl-click (Cmd on a Mac) opens a separate window as before.
+	"interface.load_character_list.deploy_tip": "TIP: Deploy runs the character in this window, switchable from the boxes in the corner. Hold Ctrl and click to open it in a new window instead.",
 	// js/html.js load_character_list; authored interface text.
 	"interface.load_character_list.offline": "OFFLINE",
 	// js/html.js load_character_list; authored interface text.

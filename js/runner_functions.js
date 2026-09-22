@@ -111,14 +111,23 @@ function mode_resolve_all() {
  * The Code of the character is inside another iframe within that iframe
  * @param  {string} name - Name of your character
  * @param  {string} code_slot_or_name - Code slot name
+ * @param  {Object} [options] - {graphics: true} starts a full client instead of a headless one, kept under this window with its rendering off; see view_character
  * @returns {Promise}
  */
-function start_character(name, code_slot_or_name) {
-	return parent.start_character_runner(name, code_slot_or_name);
+function start_character(name, code_slot_or_name, options) {
+	return parent.start_character_runner(name, code_slot_or_name, options);
 }
 
 function stop_character(name) {
 	parent.stop_character_runner(name);
+}
+
+function view_character(name) {
+	// Shows a character started with {graphics: true} in place of this one,
+	// full-size, and stops this window's own rendering meanwhile. Call with
+	// no name to come back. Only the shown character renders; every other
+	// one keeps running its logic at full speed.
+	return parent.view_character_runner(name);
 }
 
 function command_character(name, code_snippet) {

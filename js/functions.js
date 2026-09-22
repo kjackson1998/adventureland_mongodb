@@ -1915,7 +1915,14 @@ function owned_character_name(name) {
 	return owned && owned.name;
 }
 
-function start_character_runner(name, code_slot_or_name) {
+function start_character_runner(name, code_slot_or_name, options) {
+	var graphics = !!(options && options.graphics);
+	// Viewable characters all belong to the top window, whichever character
+	// asked for them: one box row, one stack, and none of them dies with
+	// another. Headless ones stay with the character that started them.
+	if (graphics && window.frameElement && window.frameElement.classList.contains("viewable") && parent.start_character_runner) {
+		return parent.start_character_runner(name, code_slot_or_name, options);
+	}
 	var owned = owned_character(name);
 	if (!owned) return rejecting_promise({ reason: "character_not_found" });
 	name = owned.name;
@@ -1943,6 +1950,23 @@ function start_character_runner(name, code_slot_or_name) {
 	url = url.split("?");
 	url = url[0];
 	if (!code_slot_or_name) code_slot_or_name = "";
+	if (graphics) {
+		// A full client, kept under this window with its rendering off, so it
+		// can be shown (view_character) or previewed (hovering its box).
+		viewable_stack().append(
+			'<iframe src="' +
+				url +
+				"?code=" +
+				code_slot_or_name +
+				'" id="' +
+				rid +
+				'" class="viewable" style="position: absolute; left: 0px; top: 0px; width: 100%; height: 100%; border: none; pointer-events: none" data-name="' +
+				name +
+				'"></iframe>',
+		);
+		add_viewable_box(name);
+		return push_deferred(name);
+	}
 	$("#iframelist").append(
 		'<div class="clickable" onclick="show_character_snippet(\'' +
 			name +
@@ -1958,6 +1982,211 @@ function start_character_runner(name, code_slot_or_name) {
 	);
 	$("#iframelist").css("display", "inline-block");
 	return push_deferred(name);
+}
+
+// ---- viewable characters ---------------------------------------------------
+// Characters started with {graphics: true} are full clients stacked under this
+// window, rendering nothing until shown. Only the character on screen renders
+// (this window's own, or the viewed one), plus the previewed one while a box
+// is hovered; everyone else keeps running its logic with rendering suppressed
+// (see suppress_rendering in game.js). The boxes in the corner show each
+// character's name and CODE status; click to view, hover to preview.
+
+var viewed_character = null; // name of the viewable character shown full-size, or null for this window's own
+var previewed_character = null; // name of the viewable character shown small next to its box, or null
+
+// The full-size stack the viewable frames live in. Frames that aren't on
+// screen are hidden, so the stack itself can stay in one place: over the
+// page, so a preview shows on top of it, and under the bottom-right corner
+// (z-index 300) where the boxes live, so the row stays clickable over a
+// shown frame. It takes no clicks of its own; the shown frame does.
+var VIEWABLE_STACK_Z = 150;
+function viewable_stack() {
+	var stack = $("#viewablestack");
+	if (!stack.length) {
+		$("body").append('<div id="viewablestack" style="position: fixed; left: 0px; top: 0px; width: 100%; height: 100%; pointer-events: none; z-index: ' + VIEWABLE_STACK_Z + '"></div>');
+		stack = $("#viewablestack");
+		setInterval(update_viewable_boxes, 1000);
+	}
+	return stack;
+}
+
+function viewable_frame(name) {
+	var frame = name && document.getElementById("ichar" + name.toLowerCase());
+	return frame && frame.classList.contains("viewable") ? frame : null;
+}
+
+// True for a started character whose frame runs its own draw loop, so the
+// main loop must not drive it.
+function is_viewable_character(name) {
+	return !!viewable_frame(name);
+}
+
+function viewable_box_html(name, self) {
+	// Same shape as a headless box: a block per character, the box inside it
+	// right-aligned by the corner, so they stack downwards.
+	return (
+		'<div class="clickable viewablebox" data-name="' +
+		name +
+		'" onclick="btc(event); view_character_runner(' +
+		(self ? "null" : "'" + name + "'") +
+		')" onmouseenter="preview_character(\'' +
+		name +
+		"')\" onmouseleave=\"preview_character(null)\">" +
+		'<div class="viewableboxframe" style="display: inline-block; margin-top: -5px; height: 60px; width: 128px; border: 5px solid gray; background-color: black; color: white; font-size: 14px; text-align: center; overflow: hidden; vertical-align: bottom">' +
+		'<div style="margin-top: 8px; font-weight: bold">' +
+		name +
+		'</div><div class="viewableboxstatus" style="font-size: 12px; color: #C0C0C0"></div></div></div>'
+	);
+}
+
+// The box row: this window's own character first, then every viewable one
+// in the order they were started. Boxes stay above a viewed frame, so the
+// row works like a taskbar whichever character is on screen.
+function add_viewable_box(name) {
+	if (character && !$('.viewablebox[data-name="' + character.name + '"]').length) $("#iframelist").append(viewable_box_html(character.name, true));
+	$("#iframelist").append(viewable_box_html(name, false));
+	$("#iframelist").css("display", "inline-block");
+	update_viewable_boxes();
+}
+
+// A character's CODE status: what its runner last set with set_message.
+function character_status_html(win) {
+	try {
+		var runner = win.document.getElementById("maincode");
+		if (runner && runner.contentWindow && runner.contentWindow.current_message) return runner.contentWindow.current_message;
+	} catch (e) {}
+	return "";
+}
+
+function update_viewable_boxes() {
+	$(".viewablebox").each(function () {
+		var $box = $(this),
+			name = $box.data("name"),
+			win = null,
+			shown = name == (viewed_character || (character && character.name));
+		if (character && name == character.name) win = window;
+		else {
+			var frame = viewable_frame(name);
+			win = frame && frame.contentWindow;
+		}
+		var status = win ? character_status_html(win) : "";
+		if (win && !win.character) status = "...";
+		$box.find(".viewableboxstatus").html(status);
+		$box.find(".viewableboxframe").css("border-color", shown ? "#8AC26F" : "gray");
+	});
+}
+
+// Who renders: the head (the viewed character, else this window's own) and,
+// while a box is hovered, the previewed one as well. Everyone else runs
+// with rendering suppressed.
+function apply_viewable_rendering() {
+	var self = character && character.name;
+	var head = viewed_character || self;
+	function renders(name) {
+		return name == head || name == previewed_character;
+	}
+	suppress_rendering(!renders(self));
+	$("#viewablestack iframe").each(function () {
+		var name = $(this).data("name"),
+			win = this.contentWindow;
+		if (win && win.suppress_rendering) win.suppress_rendering(!renders(name));
+		// a frame that isn't drawing must not show its stale picture when the stack is raised
+		$(this).css("visibility", renders(name) ? "visible" : "hidden");
+	});
+}
+
+function view_character_runner(name) {
+	if (name) {
+		name = owned_character_name(name) || name;
+		if (character && name == character.name) name = null;
+		else if (!viewable_frame(name)) return rejecting_promise({ reason: "not_viewable", name: name });
+	}
+	preview_character(null); // a click lands while the box is still hovered
+	viewed_character = name || null;
+	$("#viewablestack iframe").each(function () {
+		var mine = $(this).data("name") == viewed_character;
+		$(this).css({ "z-index": mine ? 1 : 0, "pointer-events": mine ? "auto" : "none" });
+	});
+	// While another character is shown, this window's own page (HUD, chat,
+	// canvas, dialogs) is hidden wholesale: the shown frame is a full client
+	// with all of its own. Only the box row stays, so the switch is always
+	// on screen.
+	$("body > *").not("#viewablestack").css("visibility", viewed_character ? "hidden" : "");
+	$("#iframelist").css("visibility", viewed_character ? "visible" : "");
+	apply_viewable_rendering();
+	update_viewable_boxes();
+	return resolving_promise({ name: viewed_character });
+}
+
+// Hovering a box shows that character live at a fraction of full size,
+// beside the box column, without leaving the current view.
+var PREVIEW_SCALE = 0.3125;
+
+// The preview transform: the page shrunk about its bottom-right corner, then
+// moved so its bottom-right corner sits on the bottom-left corner of the
+// box column. Elements scaled about the same screen point share it.
+function preview_transform() {
+	var w = $(window).width(),
+		h = $(window).height(),
+		row = $("#iframelist")[0],
+		rect = row ? row.getBoundingClientRect() : { left: w, bottom: h };
+	return "translate(" + -(w - rect.left) + "px, " + -(h - rect.bottom) + "px) scale(" + PREVIEW_SCALE + ")";
+}
+var host_preview_styles = null; // [element, inline style before] for this window's page while it is previewed
+
+// This window's own page shown small over the shown frame: every top-level
+// element is scaled about the same screen point, which scales the page as a
+// whole. The bottom-right corner, where the box being hovered lives, stays
+// as it is. Restores every inline style afterwards.
+function host_preview(on) {
+	if (on) {
+		if (host_preview_styles) return;
+		host_preview_styles = [];
+		var w = $(window).width(),
+			h = $(window).height(),
+			transform = preview_transform();
+		$("body > *")
+			.not("#viewablestack, #bottomrightcorner")
+			.each(function () {
+				var rect = this.getBoundingClientRect();
+				host_preview_styles.push([this, this.getAttribute("style")]);
+				// keep the page's own stacking order (HUD corners above the canvas), lifted above the shown frame
+				var z = parseInt($(this).css("z-index"));
+				var css = { visibility: "visible", transform: transform, "transform-origin": w - rect.left + "px " + (h - rect.top) + "px", "z-index": VIEWABLE_STACK_Z + 1 + (isNaN(z) ? 0 : z) };
+				if ($(this).css("position") == "static") css.position = "relative";
+				$(this).css(css);
+			});
+	} else {
+		if (!host_preview_styles) return;
+		host_preview_styles.forEach(function (pair) {
+			if (pair[1] === null) pair[0].removeAttribute("style");
+			else pair[0].setAttribute("style", pair[1]);
+		});
+		host_preview_styles = null;
+		$("body > *").not("#viewablestack").css("visibility", viewed_character ? "hidden" : "");
+		$("#iframelist").css("visibility", viewed_character ? "visible" : "");
+	}
+}
+
+function preview_character(name) {
+	if (name) name = owned_character_name(name) || name;
+	var self = character && character.name;
+	var head = viewed_character || self;
+	if (name == head) name = null; // already on screen
+	var frame = viewable_frame(name);
+	if (!frame && name != self) name = null;
+	if (previewed_character == name) return;
+	// undo the previous preview
+	if (previewed_character == self) host_preview(false);
+	else if (previewed_character) {
+		var previous = viewable_frame(previewed_character);
+		if (previous) $(previous).css({ transform: "", "z-index": previewed_character == viewed_character ? 1 : 0 });
+	}
+	previewed_character = name;
+	if (frame) $(frame).css({ transform: preview_transform(), "transform-origin": "100% 100%", "z-index": 2 });
+	else if (name == self) host_preview(true);
+	apply_viewable_rendering();
 }
 
 function character_started_runner(requested_name, actual_name) {
@@ -1980,6 +2209,11 @@ function stop_character_runner(name) {
 	name = owned_character_name(name) || name;
 	if (deferreds[name] && deferreds[name].length) reject_deferreds(name, { reason: "interrupted", name: name });
 	var rid = "ichar" + name.toLowerCase();
+	if (viewable_frame(name)) {
+		if (previewed_character == name) preview_character(null);
+		if (viewed_character == name) view_character_runner(null);
+		$('.viewablebox[data-name="' + name + '"]').remove();
+	}
 	$("#" + rid).remove();
 }
 
@@ -5469,7 +5703,7 @@ function test_bitmap(x, y, size) {
 }
 
 function d_line(start, end, args) {
-	if (!d_lines || no_graphics || paused) return;
+	if (!d_lines || no_graphics || rendering_off()) return;
 	if (!args) args = {};
 	var party = [0xf80c12, 0xee1100, 0xff3311, 0xff4422, 0xff6644, 0xff9933, 0xfeae2d, 0xccbb33, 0xd0c310, 0xaacc22, 0x69d025, 0x22ccaa, 0x12bdb9, 0x11aabb, 0x4444dd, 0x3311bb, 0x3b0cbd, 0x442299];
 	if (start.slots && ((start.slots.helmet && start.slots.helmet.name == "partyhat") || (start.slots.mainhand && start.slots.mainhand.name == "ornamentstaff")) && args.color != "heal") {
@@ -5554,12 +5788,12 @@ function shift_d_texts(entity, add) {
 }
 
 function d_text_new(message, entity, args) {
-	if (no_graphics || paused || entity._destroyed) return;
+	if (no_graphics || rendering_off() || entity._destroyed) return;
 	if (pixel_fonts.defer(message, function () { d_text_new(message, entity, args); })) return;
 	var x = 0,
 		y = -get_height(entity);
 	if (entity.name_tag || entity.hp_bar) y -= 12;
-	if (mode.dom_tests_pixi || no_graphics || paused) return;
+	if (mode.dom_tests_pixi || no_graphics || rendering_off()) return;
 	if (!args) args = {};
 	var color = args.color || "#4C4C4C",
 		fx = null; // "#383537" before text_quality = 2 as default [16/08/16]
@@ -5632,7 +5866,7 @@ function d_text_new(message, entity, args) {
 
 function d_text(message, x, y, args) {
 	var sprite = null;
-	if (mode.dom_tests_pixi || no_graphics || paused) return;
+	if (mode.dom_tests_pixi || no_graphics || rendering_off()) return;
 	if (x && x._destroyed) return;
 	if (pixel_fonts.defer(message, function () { d_text(message, x, y, args); })) return;
 	if (is_object(x)) {

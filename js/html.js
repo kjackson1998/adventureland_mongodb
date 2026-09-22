@@ -7149,10 +7149,13 @@ function load_character_list() {
 			party = player.party,
 			name = player.name,
 			online = false;
-		if (player.online)
-			((afk = "<span style='color: #34bf15'>" + phrase.html("interface.load_character_list.online") + "</span>"),
-				(link = "<span class='gray'>" + phrase.html("interface.load_character_list.deployed") + "</span>"));
-		else
+		if (player.online) {
+			afk = "<span style='color: #34bf15'>" + phrase.html("interface.load_character_list.online") + "</span>";
+			// running here as a viewable character: offer to show it
+			if (is_viewable_character(player.name))
+				link = "<span class='clickable' style='color: #4C9BC8' onclick='hide_modal(); view_character_runner(\"" + player.name + "\");'>" + phrase.html("interface.load_character_list.view") + "</span>";
+			else link = "<span class='gray'>" + phrase.html("interface.load_character_list.deployed") + "</span>";
+		} else
 			((afk = "<span style='color: gray'>" + phrase.html("interface.load_character_list.offline") + "</span>"),
 				(link =
 					"<a href='/character/" +
@@ -7161,9 +7164,9 @@ function load_character_list() {
 					server_region +
 					"/" +
 					server_identifier +
-					"/' target='_blank'" +
-					(is_tauri ? " onclick='tauri_create_subwindow(this.href); return false;'" : "") +
-					" class='cancela' style='color: #4C9BC8'>" +
+					"/' target='_blank' onclick='return deploy_character_click(event, this, \"" +
+					player.name +
+					"\");' class='cancela' style='color: #4C9BC8'>" +
 					phrase.html("interface.load_character_list.deploy") +
 					"</a>"));
 		if (player.name != character.name && player.name != "Hidden")
@@ -7183,9 +7186,26 @@ function load_character_list() {
 		html += "</tr>";
 	});
 	html += "</table>";
+	html += "<div style='font-size: 16px; margin-top: 8px; color: gray'>" + phrase.html("interface.load_character_list.deploy_tip") + "</div>";
 	$(".friendslist").html(html);
 	$(".friendslist").parent().find(".active2").removeClass("active2");
 	$(".fcharacters").addClass("active2");
+}
+
+// Deploy in the character list: runs the character in this window as a
+// viewable character; with Ctrl held (Cmd on a Mac) it opens the character's
+// own window or tab instead, as Deploy always did.
+function deploy_character_click(event, link, name) {
+	if (event.ctrlKey || event.metaKey) {
+		if (is_tauri) {
+			tauri_create_subwindow(link.href);
+			return false;
+		}
+		return true;
+	}
+	hide_modal();
+	start_character_runner(name, "", { graphics: true });
+	return false;
 }
 
 function load_mainframe_list(info) {

@@ -5044,7 +5044,7 @@ module.exports = {
 		'Open another game client from character selection with <b>&gt; New Game Window</b>, or type <span class="dlabel">/window</span> in chat. Each window renders the complete game and runs that character\'s CODE.',
 	// docs/guide/multi.html:11; Documentation div prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged. Fixed HTML: preserve every tag, attribute, handler and URL exactly; translate visible prose only.
 	"docs.guide.multi.open-com-select-characters-and-press-deploy-to":
-		'Open COM, select <b>Characters</b>, and press <b>Deploy</b> to open an owned character in a new window. COM also shows where your characters are connected.',
+		'Open COM, select <b>Characters</b>, and press <b>Deploy</b> to run an owned character in this window: it plays with its rendering off, and the boxes in the corner switch which character is on screen (hover a box for a live preview). Hold Ctrl and click <b>Deploy</b> to open a new window instead. COM also shows where your characters are connected.',
 	// docs/guide/multi.html:2; Documentation div prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged.
 	"docs.guide.multi.run-more-than-one-character": "Run More Than One Character",
 	// docs/guide/multi.html:19; Documentation div prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged. Fixed HTML: preserve every tag, attribute, handler and URL exactly; translate visible prose only. Keep names: ["CODE"].
@@ -5817,7 +5817,7 @@ module.exports = {
 	"docs.tutorial.multiple-characters.only-trust-commands-from-your-own-characters-check": "Only trust commands from your own characters. Check the sender before acting on a CODE message.",
 	// docs/tutorial/multiple-characters.html:23; Documentation p prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged. Fixed HTML: preserve every tag, attribute, handler and URL exactly; translate visible prose only.
 	"docs.tutorial.multiple-characters.open-com-characters-you-can-deploy-another-character":
-		'Open <span class="gamebutton gamebutton-small">COM</span> → Characters. You can deploy another character in a game window and move equipment or gold through the shared bank.',
+		'Open <span class="gamebutton gamebutton-small">COM</span> → Characters. You can deploy another character in this window and switch to it from the boxes in the corner, or hold Ctrl to deploy it in its own window, and move equipment or gold through the shared bank.',
 	// docs/tutorial/multiple-characters.html:28; Documentation div prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged. Keep names: ["CODE"].
 	"docs.tutorial.multiple-characters.optional-code": "OPTIONAL CODE",
 	// docs/tutorial/multiple-characters.html:37; Documentation p prose block. Keep Adventure Land, CODE symbols, and item/NPC/map/monster names unchanged. Fixed HTML: preserve every tag, attribute, handler and URL exactly; translate visible prose only. Locked inline code: ["start_character","send_cm","on_cm","command_character"].
