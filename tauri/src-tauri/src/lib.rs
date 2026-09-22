@@ -547,6 +547,39 @@ fn enable_compatibility_mode(
     Ok(())
 }
 
+/// Keep the webview's visibility in step with the window being minimized.
+///
+/// On Windows, a WebView2 control is not told when its window is minimized:
+/// the host has to set the control's `IsVisible` itself, which Microsoft's
+/// WebView2 guidance says to do on minimize and restore. Tauri does not do
+/// it, so a minimized game window keeps rendering at full rate, and the
+/// page's `document.hidden` never becomes true, which is what the game's
+/// `is_hidden()` checks read to skip rendering while hidden.
+///
+/// Hiding the webview (not the window) flips `document.hidden` and stops
+/// the rendering; showing it again restores both. Only the minimized state
+/// is tracked here, on purpose: tying webview visibility to the window's
+/// own show/hide has caused blank flashes in the past.
+#[cfg(windows)]
+fn sync_webview_visibility(window: &WebviewWindow) {
+    let handle = window.clone();
+    let hidden = AtomicBool::new(false);
+    window.on_window_event(move |event| {
+        if !matches!(event, tauri::WindowEvent::Resized(_)) {
+            return;
+        }
+        let minimized = handle.is_minimized().unwrap_or(false);
+        if hidden.swap(minimized, Ordering::Relaxed) == minimized {
+            return;
+        }
+        let webview: &tauri::Webview = handle.as_ref();
+        let _ = if minimized { webview.hide() } else { webview.show() };
+    });
+}
+
+#[cfg(not(windows))]
+fn sync_webview_visibility(_window: &WebviewWindow) {}
+
 fn open_subwindow(app: AppHandle, state: &AppState, url: tauri::Url) -> Result<(), String> {
     let open_subwindows = app
         .webview_windows()
@@ -564,7 +597,7 @@ fn open_subwindow(app: AppHandle, state: &AppState, url: tauri::Url) -> Result<(
         *counter += 1;
         format!("sub-{counter}")
     };
-    WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
         .title("Adventure Land")
         .inner_size(WIN_WIDTH, WIN_HEIGHT)
         // Native file drops block the game's HTML5 item drops on Windows.
@@ -573,6 +606,7 @@ fn open_subwindow(app: AppHandle, state: &AppState, url: tauri::Url) -> Result<(
         .on_navigation(is_game_url)
         .build()
         .map_err(|error| error.to_string())?;
+    sync_webview_visibility(&window);
     Ok(())
 }
 
@@ -767,6 +801,7 @@ pub fn run() {
                 }
             })
             .build()?;
+            sync_webview_visibility(&main);
 
             // A second blocking GTK dialog loop can deadlock WebKitGTK on
             // Linux. Let the window manager close the client normally there.
