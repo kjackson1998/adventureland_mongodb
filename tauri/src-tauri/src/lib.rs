@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -31,6 +32,9 @@ const WIN_HEIGHT: f64 = 922.0;
 
 struct AppState {
     sub_counter: Mutex<u32>,
+    // `--overrides <dir>`: game files served from this folder instead of the
+    // server, by path. None unless the flag was given.
+    overrides: Option<PathBuf>,
     // Process-local only. Never write the route or copy either host's storage.
     compatibility_mode: AtomicBool,
     compatibility_committed: AtomicBool,
@@ -233,12 +237,47 @@ fn init_steam(
 mod tests {
     use super::{
         character_window_url, game_url, is_external_url, is_game_url, is_steam_checkout_url,
-        session_url, startup_page_finished,
+        override_content_type, override_path, overrides_dir, session_url, startup_page_finished,
         BUILD, PLATFORM, STEAM_APP_ID, STEAM_IDENTITY,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    #[test]
+    fn reads_the_overrides_flag() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string());
+        assert_eq!(overrides_dir(args(&["exe"])), None);
+        assert_eq!(overrides_dir(args(&["exe", "--overrides"])), None);
+        assert_eq!(
+            overrides_dir(args(&["exe", "--overrides", "C:\\al-overrides"])),
+            Some("C:\\al-overrides".into())
+        );
+    }
+
+    #[test]
+    fn serves_overrides_by_url_path_only() {
+        let dir = std::env::temp_dir().join(format!("al-overrides-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("js")).unwrap();
+        std::fs::write(dir.join("js/game.js"), "// test").unwrap();
+        let file = dir.join("js").join("game.js");
+        assert_eq!(override_path(&dir, "https://adventure.land/js/game.js?v=12"), Some(file.clone()));
+        assert_eq!(override_path(&dir, "https://cloudflare.adventure.land/js/game.js"), Some(file.clone()));
+        assert_eq!(override_path(&dir, "https://adventure.land/js/missing.js"), None);
+        assert_eq!(override_path(&dir, "https://adventure.land/js/"), None);
+        assert_eq!(override_path(&dir, "https://adventure.land/"), None);
+        // The URL parser resolves dot segments before we see them.
+        assert_eq!(override_path(&dir, "https://adventure.land/js/../js/game.js"), Some(file));
+        assert_eq!(override_path(&dir, "https://adventure.land/js/..%2Fgame.js"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn labels_overrides_by_extension() {
+        assert_eq!(override_content_type(std::path::Path::new("a/game.js")), "text/javascript; charset=utf-8");
+        assert_eq!(override_content_type(std::path::Path::new("a/en.json")), "application/json; charset=utf-8");
+        assert_eq!(override_content_type(std::path::Path::new("a/thing.bin")), "application/octet-stream");
+    }
 
     #[test]
     fn accepts_only_adventure_land_https_urls() {
@@ -547,6 +586,132 @@ fn enable_compatibility_mode(
     Ok(())
 }
 
+/// The folder named by `--overrides <dir>` on the command line, or None.
+fn overrides_dir(args: impl Iterator<Item = String>) -> Option<PathBuf> {
+    let mut args = args.skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--overrides" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// The local file that stands in for a game URL, if there is one: the URL's
+/// path looked up under `dir`, query and fragment ignored, so
+/// `/js/game.js?v=12` becomes `<dir>/js/game.js`. Only files inside `dir`
+/// count; a path that climbs out of it, or names a folder, gets None.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn override_path(dir: &Path, uri: &str) -> Option<PathBuf> {
+    let url = url::Url::parse(uri).ok()?;
+    let mut path = dir.to_path_buf();
+    for segment in url.path_segments()? {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." || segment.contains(['\\', ':']) {
+            return None;
+        }
+        path.push(segment);
+    }
+    if path == dir || !path.is_file() {
+        return None;
+    }
+    Some(path)
+}
+
+/// The MIME type a served override is labeled with, by extension.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn override_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("html") => "text/html; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") => "audio/ogg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Answer game requests from the overrides folder when it holds a matching
+/// file; every other request goes to the server as usual. Frames inside the
+/// window share its WebView2, so they are covered too. Windows only: the
+/// hook is WebView2's WebResourceRequested event.
+#[cfg(windows)]
+fn install_overrides(window: &WebviewWindow, dir: PathBuf) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2WebResourceRequestedEventArgs, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+    };
+    use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+    use windows::core::{HSTRING, PWSTR};
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+
+    let label = window.label().to_string();
+    let webview: &tauri::Webview = window.as_ref();
+    let _ = webview.with_webview(move |platform| unsafe {
+        let core = match platform.controller().CoreWebView2() {
+            Ok(core) => core,
+            Err(error) => {
+                eprintln!("[Tauri] Overrides unavailable in {label}: {error}");
+                return;
+            }
+        };
+        let env = platform.environment();
+        for filter in ["https://adventure.land/*", "https://*.adventure.land/*"] {
+            let _ = core.AddWebResourceRequestedFilter(
+                &HSTRING::from(filter),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            );
+        }
+        let mut token: i64 = 0; // the event registration token, never unregistered
+        let handler = WebResourceRequestedEventHandler::create(Box::new(
+            move |_, args: Option<ICoreWebView2WebResourceRequestedEventArgs>| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let request = args.Request()?;
+                let uri = {
+                    let mut uri = PWSTR::null();
+                    request.Uri(&mut uri)?;
+                    take_pwstr(uri)
+                };
+                let Some(path) = override_path(&dir, &uri) else {
+                    return Ok(());
+                };
+                let Ok(content) = std::fs::read(&path) else {
+                    return Ok(());
+                };
+                let headers = format!(
+                    "Content-Type: {}\nCache-Control: no-store\n",
+                    override_content_type(&path)
+                );
+                let stream = SHCreateMemStream(Some(content.as_slice()));
+                let response = env.CreateWebResourceResponse(
+                    stream.as_ref(),
+                    200,
+                    &HSTRING::from("OK"),
+                    &HSTRING::from(headers),
+                )?;
+                args.SetResponse(&response)?;
+                eprintln!("[Tauri] Override {}", path.display());
+                Ok(())
+            },
+        ));
+        let _ = core.add_WebResourceRequested(&handler, &mut token);
+    });
+}
+
+#[cfg(not(windows))]
+fn install_overrides(_window: &WebviewWindow, _dir: PathBuf) {}
+
 /// Keep the webview's visibility in step with the window being minimized.
 ///
 /// On Windows, a WebView2 control is not told when its window is minimized:
@@ -607,6 +772,9 @@ fn open_subwindow(app: AppHandle, state: &AppState, url: tauri::Url) -> Result<(
         .build()
         .map_err(|error| error.to_string())?;
     sync_webview_visibility(&window);
+    if let Some(dir) = &state.overrides {
+        install_overrides(&window, dir.clone());
+    }
     Ok(())
 }
 
@@ -720,8 +888,13 @@ pub fn run() {
     let steam_ticket = Arc::new(Mutex::new(String::new()));
     let steam_error = Arc::new(Mutex::new(String::new()));
     let steam_purchases = Arc::new(Mutex::new(HashMap::new()));
+    let overrides = overrides_dir(std::env::args());
+    if let Some(dir) = &overrides {
+        eprintln!("[Tauri] Overrides from {}", dir.display());
+    }
     let state = AppState {
         sub_counter: Mutex::new(0),
+        overrides,
         compatibility_mode: AtomicBool::new(false),
         compatibility_committed: AtomicBool::new(false),
         startup_finished: AtomicBool::new(false),
@@ -802,6 +975,9 @@ pub fn run() {
             })
             .build()?;
             sync_webview_visibility(&main);
+            if let Some(dir) = &app.state::<AppState>().overrides {
+                install_overrides(&main, dir.clone());
+            }
 
             // A second blocking GTK dialog loop can deadlock WebKitGTK on
             // Linux. Let the window manager close the client normally there.
